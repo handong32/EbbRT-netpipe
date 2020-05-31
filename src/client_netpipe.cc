@@ -27,11 +27,12 @@ struct data {
 };
 
 // MAX TCP per send length, need to manually segment the data
-#define MAXS 262144
+//#define MAXS 262144
+#define MAXS 900000
 
 namespace ebbrt {
   class TcpSender : public ebbrt::TcpHandler {
-public:
+  public:
     TcpSender(ebbrt::NetworkManager::TcpPcb pcb)
       : ebbrt::TcpHandler(std::move(pcb)) {
     }
@@ -52,13 +53,12 @@ public:
 
 	auto chain_len = buf_->ComputeChainDataLength();	
 	if(chain_len == buf_size_) {	  
-	  //total_bytes += chain_len;
-	  //ebbrt::kprintf_force("finish receive chain_len=%d chain_elements=%d\n", chain_len, buf_->CountChainElements());
 	  ebbrt::event_manager->ActivateContext(std::move(context_));
 	}
 	break;
       }
       default: {
+	ebbrt::clock::SleepMilli(1000);
 	ebbrt::event_manager->ActivateContext(std::move(context_));
       }
       }
@@ -119,18 +119,19 @@ public:
       buf_size_ = buf_size;
       //ebbrt::kprintf_force("DoSend() =%d %d\n", buf_size, iterations);
       
-      for(j = 0; j < iterations; j++) {	
-	if(buf_size_ > MAXS) {
-	  size_t tmp_len = buf_size_;
-	  //ebbrt::kprintf_force("tmp_len=%d\n", tmp_len);
-	  while(tmp_len > MAXS) {
-	    auto buf = ebbrt::MakeUniqueIOBuf(MAXS);
-	    memset(buf->MutData(), 'a', MAXS);
-	    Send(std::move(buf));
-	    //ebbrt::kprintf_force("sending length=%d\n", MAXS);
-	    tmp_len -= MAXS;
-	  }
-	  
+      for(j = 0; j < iterations; j++) {
+	if(j == 0) {
+	  if(buf_size_ > MAXS) {
+	    size_t tmp_len = buf_size_;
+	    //ebbrt::kprintf_force("tmp_len=%d\n", tmp_len);
+	    while(tmp_len > MAXS) {
+	      auto buf = ebbrt::MakeUniqueIOBuf(MAXS);
+	      memset(buf->MutData(), 'a', MAXS);
+	      Send(std::move(buf));
+	      //ebbrt::kprintf_force("sending length=%d\n", MAXS);
+	      tmp_len -= MAXS;
+	    }
+	    
 	    if(tmp_len) {
 	      auto buf = ebbrt::MakeUniqueIOBuf(tmp_len);
 	      memset(buf->MutData(), 'a', tmp_len);
@@ -138,18 +139,21 @@ public:
 	      //ebbrt::kprintf_force("sending length=%d\n", tmp_len);
 	      tmp_len -= tmp_len;
 	    }
+	  } else {
+	    auto buf = ebbrt::MakeUniqueIOBuf(buf_size);
+	    memset(buf->MutData(), 'a', buf_size);
+	    Send(std::move(buf));
+	  }
 	} else {
-	  auto buf = ebbrt::MakeUniqueIOBuf(buf_size);
-	  memset(buf->MutData(), 'a', buf_size);
-	  Send(std::move(buf));
+	  Send(std::move(buf_));
 	}
-	buf_ = nullptr;
 	
 	Pcb().Output();
 	//ebbrt::kprintf_force("Sending j=%d ", j);
 	//total_bytes += buf_size;
 	ebbrt::event_manager->SaveContext(context_);
       }
+      buf_ = nullptr;
       //ebbrt::kprintf_force("total bytes: %llu ", total_bytes);
     }    
     
@@ -172,7 +176,7 @@ public:
     static const constexpr int kNSamp = 100;
     static const constexpr size_t nbuff = 3;
     static const constexpr int perturbation = 0;
-    static const constexpr size_t start = 64;
+    static const constexpr size_t start = 300000;
     //static const constexpr size_t start = 200000;
     static const constexpr int end = 800000;
     //static const constexpr int end = 786433;
@@ -199,7 +203,7 @@ public:
 
 void AppMain() {
   ebbrt::kprintf_force("Core %u: NetPIPE TX mode\n", static_cast<uint32_t>(ebbrt::Cpu::GetMine()));
-  
+    
   for (uint32_t i = 0; i < static_cast<uint32_t>(ebbrt::Cpu::Count()); i++) {
     ebbrt::event_manager->SpawnRemote(
       [i] () mutable {
@@ -211,7 +215,7 @@ void AppMain() {
       }, i);
   }
 
-  ebbrt::clock::SleepMilli(1000);
+  ebbrt::clock::SleepMilli(5000);
   
   ebbrt::event_manager->SpawnLocal(
     [] () mutable {           
@@ -228,14 +232,14 @@ void AppMain() {
       double bps = 0.0;
       
       ebbrt::NetworkManager::TcpPcb tpcb;      
-      tpcb.Connect(ebbrt::Ipv4Address({192, 168, 1, 8}), 5002);
+      tpcb.Connect(ebbrt::Ipv4Address({192, 168, 1, 9}), 5002);
       
       auto handler = new ebbrt::TcpSender(std::move(tpcb));
       handler->Install();     
       ebbrt::kprintf_force("handler->Install\n");
       
       size_t tsz = 100;
-      size_t iters = 100;
+      size_t iters = 10;
       handler->Sync();
       handler->SendRepeat(tsz, iters);
       s1 = ebbrt::clock::Wall::Now().time_since_epoch();
@@ -252,11 +256,13 @@ void AppMain() {
       
       //handler->DoTest();
       // for logging
-      handler->msg_sizes.push_back(64);
-      handler->msg_sizes.push_back(1024);
-      handler->msg_sizes.push_back(8192);
-      handler->msg_sizes.push_back(65536);
-      handler->msg_sizes.push_back(262144);
+      //handler->msg_sizes.push_back(64);
+      //handler->msg_sizes.push_back(1024);
+      //handler->msg_sizes.push_back(8192);
+      //handler->msg_sizes.push_back(65536);
+      handler->msg_sizes.push_back(393216);
+      handler->msg_sizes.push_back(524288);
+      handler->msg_sizes.push_back(786432);
       
       for(uint32_t i = 0; i < handler->msg_sizes.size(); i++) {
 	tsz = handler->msg_sizes[i];
@@ -289,6 +295,7 @@ void AppMain() {
 	  ebbrt::kprintf_force(" %8.2lf Mbps in %10.6lf usec\n", bps, (tdiff2 * 1000000.0));
 	}
       }
+      handler->Sync();
 
       ebbrt::kprintf_force("Finished \n");
       handler->Shutdown();      
