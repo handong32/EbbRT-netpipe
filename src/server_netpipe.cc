@@ -30,6 +30,7 @@
 
 #define MAXS 262144
 #define MCPU 1
+
 //#define WITHLOGGING
 
 //struct IxgbeLog ixgbe_logs[16];
@@ -84,8 +85,9 @@ private:
         : ebbrt::TcpHandler(std::move(pcb)), mcd_(mcd) {
       state_ = SYNC;
       repeat_ = 0;
-      msg_sizes_ = 0;
+      msg_sizes_ = 0;      
       buf_ = nullptr;
+      rapl_cpu_energy_units = 0.00001526;
     }
     void Close() {}
     void Abort() {}
@@ -112,8 +114,7 @@ private:
     }
     
     void Receive(std::unique_ptr<MutIOBuf> b) {
-      kassert(b->Length() != 0);
-      //std::string s(reinterpret_cast<const char*>(b->MutData()));
+      kassert(b->Length() != 0);      
       
       switch(state_) {
       case SYNC: {
@@ -124,7 +125,7 @@ private:
 	uint64_t rxb = 0, txb = 0;
 	uint32_t v = MCPU;	
 	
-	ebbrt::kprintf_force("++++++++++ PRINT_STATS START +++++++++++\n");
+	ebbrt::kprintf_force("+++ PRINT_STATS START +++\n");
 	il= &ixgbe_logs[v];
 	ebbrt::kprintf_force("i rx_desc rx_bytes tx_desc tx_bytes instructions cycles llc_miss joules timestamp\n");
 	for (int i = 0; i < il->itr_cnt; i++) {
@@ -145,21 +146,26 @@ private:
 	  ebbrt::clock::SleepMilli(2);	  
 	}	
 	ebbrt::kprintf_force("Core=%u itr_cnt=%lu total_rx_bytes=%lu rxb=%lu total_tx_bytes=%lu txb=%lu work_start=%llu work_end=%llu\n", v, il->itr_cnt, ixgbe_dev->ixgmq[v]->total_rx_bytes, rxb, ixgbe_dev->ixgmq[v]->total_tx_bytes, txb, work_start, work_end);
-	ebbrt::kprintf_force("++++++++++ PRINT_STATS END +++++++++++\n");
+	ebbrt::kprintf_force("+++ PRINT_STATS END +++\n");
 	    
 	//network_manager->Config("print_stats", MCPU);
 	//ebbrt::kprintf_force("%d\n", ixgbe_logs[1].itr_cnt);
 	ebbrt::clock::SleepMilli(5000);
 	network_manager->Config("clear_stats", MCPU);
 #endif
-	if (b->ComputeChainDataLength() < strlen(sync_string)) {
-	  ebbrt::kabort("Didn't receive full sync string\n");
-	}
-	auto dp = b->GetDataPointer();
+	//ebbrt::kprintf_force("pk0=%lf pk1=%lf work_start=%llu work_end=%llu pk0_start=%llu pk0_end=%llu pk1_start=%llu pk1_end=%llu\n\n", (pk0j_end_-pk0j_start_)*rapl_cpu_energy_units, (pk1j_end_-pk1j_start_)*rapl_cpu_energy_units, work_start, work_end, pk0j_start_, pk0j_end_, pk1j_start_, pk1j_end_);
+	
+	if (b->ComputeChainDataLength() != strlen(sync_string)) {
+	  std::string s(reinterpret_cast<const char*>(b->MutData()));
+	  ebbrt::kabort("Didn't receive full sync string %d %s\n",
+			b->ComputeChainDataLength(), s.c_str());
+	} 
+	/*auto dp = b->GetDataPointer();
 	auto str = reinterpret_cast<const char*>(dp.Get(strlen(sync_string)));
 	if (strncmp(sync_string, str, strlen(sync_string))) {
-	  ebbrt::kabort("Synchronization String Incorrect!\n");
-	}
+	  std::string s(reinterpret_cast<const char*>(b->MutData()));
+	  ebbrt::kabort("%d Synchronization String Incorrect! %s\n", b->ComputeChainDataLength(), s.c_str());
+	  }*/
 
 	///ebbrt::kprintf_force("Received %s\n", s.c_str());
 	//auto buf = ebbrt::IOBuf::Create<ebbrt::StaticIOBuf>(sync_string);
@@ -169,15 +175,60 @@ private:
 	break;
       }
       case REPEAT: {
-	if (b->ComputeChainDataLength() < (sizeof(msg_sizes_)+sizeof(repeat_))) {
+	if (b->ComputeChainDataLength() < (sizeof(msg_sizes_)
+					   +sizeof(repeat_)
+					   +sizeof(dvfs_)+sizeof(rapl_)
+					   +sizeof(itr_) + (2*sizeof(float)))) {
 	  ebbrt::kabort("Didn't receive full repeat\n");
 	}
+	//ebbrt::kprintf_force("+++ repeat=%d msg_sizes=%d dvfs=0x%X rapl=%d itr=%d pk0=%lf pk1=%lf ", repeat_, msg_sizes_, dvfs_, rapl_, itr_*2, (pk0j_end_-pk0j_start_)*rapl_cpu_energy_units, (pk1j_end_-pk1j_start_)*rapl_cpu_energy_units);
+	uint64_t pk0, pk1;
+	if(pk0j_end_ < pk0j_start_) {
+	  pk0 = (UINT32_MAX+pk0j_end_) - pk0j_start_;
+	} else {
+	  pk0 = pk0j_end_ - pk0j_start_;
+	}
+
+	if(pk1j_end_ < pk1j_start_) {
+	  pk1 = (UINT32_MAX+pk1j_end_) - pk1j_start_;
+	} else {
+	  pk1 = pk1j_end_ - pk1j_start_;
+	}	
+	
+	ebbrt::kprintf_force("%d %d 0x%X %d ", itr_*2, msg_sizes_, dvfs_, rapl_);
+	
 	auto dp = b->GetDataPointer();
 	msg_sizes_ = dp.Get<size_t>();
 	repeat_ = dp.Get<size_t>();
-	count_ = 0;
+	dvfs_ = dp.Get<size_t>();
+	rapl_ = dp.Get<size_t>();
+	itr_ = dp.Get<size_t>();
+	float tput = dp.Get<float>();
+	float lat = dp.Get<float>();
 	
-	ebbrt::kprintf_force("++++++++++++++++++ Core %u: repeat=%d msg_sizes=%d+++++++++++++++++\n", static_cast<uint32_t>(ebbrt::Cpu::GetMine()), repeat_, msg_sizes_);
+	count_ = 0;
+	//ebbrt::kprintf_force("tput=%f lat=%f\n", tput, lat);
+	ebbrt::kprintf_force("%f %f %lf %lf %llu %llu\n", tput, lat, pk0*rapl_cpu_energy_units, pk1*rapl_cpu_energy_units, work_start, work_end);
+	//ebbrt::kprintf_force("+++ Core %u: repeat=%d msg_sizes=%d dvfs=0x%X rapl=%d itr=%d +++\n", static_cast<uint32_t>(ebbrt::Cpu::GetMine())
+	//, repeat_, msg_sizes_, dvfs_, rapl_, itr_*2);
+
+	for (uint32_t i = 0; i < 2; i++) {
+	  event_manager->SpawnRemote(
+	    [this, i] () mutable {	      	      
+	      if(i == 0 || i == 1) {
+		ebbrt::rapl::RaplCounter powerMeter;
+		powerMeter.SetLimit(rapl_);		
+	      }
+	      if(i == 1) {
+		// same p state as Linux with performance governor
+		ebbrt::msr::Write(IA32_PERF_CTL, dvfs_);
+		network_manager->Config("rx_usecs", itr_);
+	      }
+	    }, i);
+	}
+	
+	ebbrt::clock::SleepMilli(1000);
+	
 	Send(std::move(b));
 	Pcb().Output();
 	
@@ -198,9 +249,36 @@ private:
 
 	auto chain_len = buf_->ComputeChainDataLength();	
 	if(chain_len == msg_sizes_) {
+	  
 	  // we receive a full packet
-	  if(count_ == 0) { work_start = ebbrt::rdtsc(); }
-	  if(count_ == repeat_-1) { work_end = ebbrt::rdtsc(); }
+	  if(count_ == 0) {
+	    work_start = ebbrt::rdtsc();
+	    for (uint32_t i = 0; i < 2; i++) {
+	      event_manager->SpawnRemote(
+		[this, i] () mutable {	      
+		  ebbrt::rapl::RaplCounter powerMeter;
+		  if(i == 0) {
+		    pk0j_start_ = powerMeter.ReadMsr();
+		  } else {
+		    pk1j_start_ = powerMeter.ReadMsr();
+		  }
+		}, i);
+	    }
+	  }
+	  if(count_ == repeat_-1) {
+	    work_end = ebbrt::rdtsc();
+	    for (uint32_t i = 0; i < 2; i++) {
+	      event_manager->SpawnRemote(
+		[this, i] () mutable {	      
+		  ebbrt::rapl::RaplCounter powerMeter;
+		  if(i == 0) {
+		    pk0j_end_ = powerMeter.ReadMsr();
+		  } else {
+		    pk1j_end_ = powerMeter.ReadMsr();
+		  }
+		}, i);
+	    }
+	  }
 	  
 	  count_ += 1;
 	  //ebbrt::kprintf_force("repeat=%d chain_len=%d chain_elements=%d\n", repeat_, chain_len, buf_->CountChainElements());
@@ -239,18 +317,6 @@ private:
 	}
 	
 	if(repeat_ == count_) {
-	  //network_manager->Config("print_stats", MCPU);
-	  //auto re = static_cast<std::vector<ITR_STATS>>(network_manager->ReadItr());
-	  //ebbrt::kprintf_force("len=%d\n", re.size());	  
-	  //network_manager->Config("clear_stats", MCPU);
-
-	  /*ebbrt::kprintf_force("Sending udp packet\n");
-	    ebbrt::NetworkManager::UdpPcb up;
-	    up.Bind(0);
-	  auto newbuf = MakeUniqueIOBuf(6, false);
-	  memset(newbuf->MutData(), 'c', 6);
-	  up.SendTo(ebbrt::Ipv4Address({192, 168, 1, 153}), 8888, std::move(newbuf));*/
-	  
 	  state_ = SYNC;	  	  
 	}
 	
@@ -269,8 +335,16 @@ private:
     size_t repeat_;
     size_t count_;
     size_t msg_sizes_;
+    size_t dvfs_{0};
+    size_t rapl_{0};
+    size_t itr_{0};
     uint64_t work_start;
     uint64_t work_end;
+    uint64_t pk0j_start_{0};
+    uint64_t pk1j_start_{0};
+    uint64_t pk0j_end_{0};
+    uint64_t pk1j_end_{0};
+    float rapl_cpu_energy_units;
   };
 
   NetworkManager::ListeningTcpPcb listening_pcb_;  
@@ -292,13 +366,16 @@ void AppMain() {
       }, i);
   }
   ebbrt::clock::SleepMilli(1000);
+  auto d = ebbrt::clock::Wall::Now().time_since_epoch();
+  //auto tstart = std::chrono::duration_cast<std::chrono::microseconds>(d).count();
   
   ebbrt::event_manager->SpawnRemote(
     [] () mutable {            
-      auto uid = ebbrt::ebb_allocator->AllocateLocal();
+      /*auto uid = ebbrt::ebb_allocator->AllocateLocal();
       auto udpc = ebbrt::EbbRef<ebbrt::UdpCommand>(uid);
       udpc->Start(6666);
       ebbrt::kprintf("Core %u: UdpCommand server listening on port %d\n", static_cast<uint32_t>(ebbrt::Cpu::GetMine()), 6666);
+      */
       
       auto id = ebbrt::ebb_allocator->AllocateLocal();
       auto mc = ebbrt::EbbRef<ebbrt::TcpCommand>(id);
