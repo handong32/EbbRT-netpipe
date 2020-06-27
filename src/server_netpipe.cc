@@ -19,6 +19,7 @@
 #include <ebbrt/AtomicUniquePtr.h>
 #include <ebbrt/CacheAligned.h>
 #include <ebbrt/SpinLock.h>
+#include <ebbrt/Future.h>
 #include <ebbrt/native/Net.h>
 #include <ebbrt/native/Msr.h>
 #include <ebbrt/native/RcuTable.h>
@@ -31,7 +32,7 @@
 #define MAXS 262144
 #define MCPU 1
 
-//#define WITHLOGGING
+#define WITHLOGGING
 
 //struct IxgbeLog ixgbe_logs[16];
 
@@ -60,9 +61,230 @@ namespace {
 const constexpr char sync_string[] = "SyncMe";
 }
 
-namespace ebbrt {
+bool send_stat = false;
 
-  //extern void NsPerTick();
+class TcpSender : public ebbrt::TcpHandler {
+public:
+  TcpSender(ebbrt::NetworkManager::TcpPcb pcb)
+    : ebbrt::TcpHandler(std::move(pcb)) {
+  }
+  
+  void Connected() override {
+    ebbrt::kprintf_force("TcpSender Connected()\n");
+  }
+  void TestSend() {
+    char send_buffer[32];
+    snprintf(send_buffer, sizeof(send_buffer), "hello");
+    auto newbuf = ebbrt::MakeUniqueIOBuf(sizeof(send_buffer), false);
+    std::memcpy(static_cast<void*>(newbuf->MutData()), send_buffer, strlen(send_buffer));
+    ebbrt::kprintf_force("send_buffer = %s\n", send_buffer);
+    Send(std::move(newbuf));
+    Pcb().Output();
+  }
+  
+  std::unique_ptr<ebbrt::IOBuf> SendLarge(std::unique_ptr<ebbrt::IOBuf> buf, size_t& slen) {
+    std::unique_ptr<ebbrt::IOBuf> split;
+    size_t length = 0;
+    size_t nchains = 0;
+    
+    for(auto& b : *buf) {
+      length += b.Length();
+      nchains ++;
+      if (length > MAXS || nchains > 37) {
+	auto tmp = static_cast<ebbrt::MutIOBuf*>(buf->UnlinkEnd(b).release());
+	split = std::unique_ptr<ebbrt::MutIOBuf>(tmp);
+	break;
+      }
+    }
+    
+    slen = buf->ComputeChainDataLength();
+    //ebbrt::kprintf_force("sending chains=%d len=%d\n", buf->CountChainElements(), slen);
+    Send(std::move(buf));
+    Pcb().Output();
+    return split;
+  }
+  
+  void SendLog() {
+    uint32_t v = MCPU;	  
+    uint8_t* re = (uint8_t*)&ixgbe_logs[v];    
+    uint64_t msg_size = sizeof(ixgbe_logs[v]);
+    uint64_t sum = 0;
+    
+    for(uint64_t i = 0; i < msg_size; i++) {
+      sum += re[i];
+    }
+    
+    /*for(uint64_t i = 51200000; i < msg_size; i+=8) {
+      ebbrt::kprintf_force("0x%X 0x%X 0x%X 0x%X 0x%X 0x%X 0x%X 0x%X\n",
+        		   re[i], re[i+1], re[i+2], re[i+3], re[i+4], re[i+5], re[i+6], re[i+7]);
+			   }*/
+    
+    struct IxgbeLog *il = (struct IxgbeLog *)re;
+    ebbrt::kprintf_force("SendLog() il->itr_cnt=%d msg_size=%d sum=%lu\n", il->itr_cnt, msg_size, sum);
+    
+    /*auto buf = std::make_unique<ebbrt::StaticIOBuf>(re, msg_size);
+    Send(std::move(buf));
+    Pcb().Output();*/
+    while(msg_size > MAXS) {
+      auto buf = std::make_unique<ebbrt::StaticIOBuf>(re, MAXS);
+      Send(std::move(buf));
+      
+      msg_size -= MAXS;
+      re += MAXS;
+    }
+
+    if(msg_size) {
+      auto buf = std::make_unique<ebbrt::StaticIOBuf>(re, msg_size);
+      Send(std::move(buf));      
+    }
+
+    Pcb().Output();
+    
+
+    //auto newbuf = ebbrt::MakeUniqueIOBuf(sizeof(ixgbe_logs[v]), false);
+    //std::memcpy(static_cast<void*>(newbuf->MutData()), re, sizeof(ixgbe_logs[v]));    
+    //Send(std::move(newbuf));
+    //Pcb().Output();
+    
+    /*size_t total_len = 0;
+    size_t slen = 0;
+    
+    std::unique_ptr<ebbrt::IOBuf> tmp;
+    tmp = SendLarge(std::move(newbuf), slen)    total_len = slen;
+    
+    while(total_len < msg_size) {
+      tmp = SendLarge(std::move(tmp), slen);
+      total_len += slen;
+      }*/
+  }
+  
+  void Receive(std::unique_ptr<ebbrt::MutIOBuf> b) override {
+  }
+  
+  void Close() override {
+    Pcb().Disconnect();
+  }
+  void Abort() override {}
+  
+private:
+  ebbrt::NetworkManager::TcpPcb pcb_;
+};
+
+
+ebbrt::NetworkManager::TcpPcb tpcb;
+std::unique_ptr<TcpSender> handler;
+//TcpSender* handler;
+
+namespace ebbrt {
+  
+  class TcpStat : public StaticSharedEbb<TcpStat>, public CacheAligned {
+  public:
+    TcpStat() {};
+    void Start(uint16_t port) {
+      listening_pcb_.Bind(port, [this](NetworkManager::TcpPcb pcb) {
+	  // new connection callback
+	  static std::atomic<size_t> cpu_index{MCPU};
+	  pcb.BindCpu(MCPU);
+	  auto connection = new TcpStatSession(this, std::move(pcb));
+	  connection->Install();
+	});
+    }
+
+  private:
+    class TcpStatSession : public ebbrt::TcpHandler {
+    public:
+      TcpStatSession(TcpStat *mcd, ebbrt::NetworkManager::TcpPcb pcb)
+        : ebbrt::TcpHandler(std::move(pcb)), mcd_(mcd) {	
+      }
+      void Close() {}
+      void Abort() {}
+      
+      void Receive(std::unique_ptr<MutIOBuf> b) {
+	kassert(b->Length() != 0);		  
+	std::string s(reinterpret_cast<const char*>(b->MutData()));
+	char com = (s.c_str())[0];
+	
+	switch(com) {
+	case 'a':
+	{
+	  network_manager->Config("start_stats", MCPU);
+	  Send(std::move(b));
+	  break;
+	}
+	case 'b':
+	{
+	  network_manager->Config("stop_stats", MCPU);
+	  Send(std::move(b));
+	  break;
+	}
+	case 'c':
+	{
+	  network_manager->Config("clear_stats", MCPU);
+	  Send(std::move(b));
+	  break;
+	}
+	case 'd':
+	{
+	  //ebbrt::kprintf_force("Received %c %d\n", com, s.length());
+	  Send(std::move(b));
+	  break;
+	}
+	case 'e':
+	{
+	  uint32_t v = MCPU;	  
+	  uint8_t* re = (uint8_t*)&ixgbe_logs[v];
+	  for(size_t i = 0; i < 128; i+=8) {
+	    ebbrt::kprintf_force("0x%X 0x%X 0x%X 0x%X 0x%X 0x%X 0x%X 0x%X \n",
+				 re[i], re[i+1], re[i+2], re[i+3], re[i+4], re[i+5], re[i+6], re[i+7]);
+	  }
+	  struct IxgbeLog *il = (struct IxgbeLog *)re;
+	  ebbrt::kprintf_force("il->itr_cnt = %d\n", il->itr_cnt);	  
+	  for (uint32_t i = 0; i < il->itr_cnt; i++) {
+	    union IxgbeLogEntry *ile = &il->log[i];   
+	    ebbrt::kprintf_force("%d %d %d %d %d %llu %llu %llu %llu %llu\n",
+				 i,
+				 ile->Fields.rx_desc, ile->Fields.rx_bytes,
+				 ile->Fields.tx_desc, ile->Fields.tx_bytes,
+				 ile->Fields.ninstructions,
+				 ile->Fields.ncycles,
+				 ile->Fields.nllc_miss,		   
+				 ile->Fields.joules,		   
+				 ile->Fields.tsc);
+	  }
+	  
+	  auto vnum = std::make_unique<StaticIOBuf>(re, sizeof(ixgbe_logs[v]));
+	  Send(std::move(vnum));
+	  break;
+	}
+	case 'f':
+	{
+	  size_t i = 0;
+	  ebbrt::event_manager->SpawnRemote(
+	    [this, i] () mutable {	      	      
+	      handler->TestSend();
+	    }, i);	  
+	  break;
+	}
+	case 'g':
+	{
+	  /*size_t i = 0;
+	  ebbrt::event_manager->SpawnRemote(
+	    [this, i] () mutable {	      	      
+	      handler->SendLog();
+	      }, i);*/
+	  handler->SendLog();
+	  Send(std::move(b));
+	  break;
+	}
+	}
+      }
+      
+    private:
+      ebbrt::NetworkManager::TcpPcb pcb_;
+      TcpStat *mcd_;
+    };
+    NetworkManager::ListeningTcpPcb listening_pcb_;  
+  };
   
 class TcpCommand : public StaticSharedEbb<TcpCommand>, public CacheAligned {
 public:
@@ -75,7 +297,7 @@ public:
 	auto connection = new TcpSession(this, std::move(pcb));
 	connection->Install();
 	//ebbrt::kprintf_force("Core %u: Connection created\n", static_cast<uint32_t>(ebbrt::Cpu::GetMine()));
-  });
+      });
   }
 
 private:
@@ -120,15 +342,17 @@ private:
       case SYNC: {
 #ifdef WITHLOGGING
 	network_manager->Config("stop_stats", MCPU);
-	struct IxgbeLog *il;
-	union IxgbeLogEntry *ile;
-	uint64_t rxb = 0, txb = 0;
-	uint32_t v = MCPU;	
+	//struct IxgbeLog *il;
+	//union IxgbeLogEntry *ile;
+	//uint64_t rxb = 0, txb = 0;
+	//uint32_t v = MCPU;	
+
+	//ebbrt::kprintf_force("STATS_NAME ITER ITR MSG DVFS RAPL WORK_START WORK_END\n");
+	//ebbrt::kprintf_force("i rx_desc rx_bytes tx_desc tx_bytes instructions cycles llc_miss joules timestamp\n");
+	//ebbrt::kprintf_force("PRINT_STATS_START %d %d %d 0x%X %d %llu %llu\n", iter_, itr_*2, msg_sizes_, dvfs_, rapl_, work_start, work_end);
+	//il= &ixgbe_logs[v];
 	
-	ebbrt::kprintf_force("+++ PRINT_STATS START +++\n");
-	il= &ixgbe_logs[v];
-	ebbrt::kprintf_force("i rx_desc rx_bytes tx_desc tx_bytes instructions cycles llc_miss joules timestamp\n");
-	for (int i = 0; i < il->itr_cnt; i++) {
+	/*for (int i = 0; i < il->itr_cnt; i++) {
 	  ile = &il->log[i];
 	  rxb += ile->Fields.rx_bytes;
 	  txb += ile->Fields.tx_bytes;
@@ -143,15 +367,51 @@ private:
 			       ile->Fields.joules,		   
 			       ile->Fields.tsc);
 
-	  ebbrt::clock::SleepMilli(2);	  
-	}	
-	ebbrt::kprintf_force("Core=%u itr_cnt=%lu total_rx_bytes=%lu rxb=%lu total_tx_bytes=%lu txb=%lu work_start=%llu work_end=%llu\n", v, il->itr_cnt, ixgbe_dev->ixgmq[v]->total_rx_bytes, rxb, ixgbe_dev->ixgmq[v]->total_tx_bytes, txb, work_start, work_end);
-	ebbrt::kprintf_force("+++ PRINT_STATS END +++\n");
-	    
+			       ebbrt::clock::SleepMilli(3);
+	  }*/
+	//ebbrt::kprintf_force("Core=%u itr_cnt=%lu total_rx_bytes=%lu rxb=%lu total_tx_bytes=%lu txb=%lu work_start=%llu work_end=%llu\n", v, il->itr_cnt, ixgbe_dev->ixgmq[v]->total_rx_bytes, rxb, ixgbe_dev->ixgmq[v]->total_tx_bytes, txb, work_start, work_end);
+	//ebbrt::kprintf_force("Core=%u itr_cnt=%lu\n", v, il->itr_cnt);
+	//ebbrt::kprintf_force("PRINT_STATS_END %d %d %d 0x%X %d\n", iter_, itr_*2, msg_sizes_, dvfs_, rapl_);
+
+	/*size_t i = 0;
+	ebbrt::Promise<void> p;
+	auto f = p.GetFuture();
+	ebbrt::event_manager->SpawnRemote(
+	  [this, i, &p] () mutable {
+	  handler->SendLog();
+	  p.SetValue();
+	  }, i);
+	  f.Block();*/
+	handler->SendLog();
+	ebbrt::clock::SleepMilli(5000);
+	
 	//network_manager->Config("print_stats", MCPU);
 	//ebbrt::kprintf_force("%d\n", ixgbe_logs[1].itr_cnt);
-	ebbrt::clock::SleepMilli(5000);
-	network_manager->Config("clear_stats", MCPU);
+	//ebbrt::clock::SleepMilli(5000);
+	/*ebbrt::Promise<void> p;
+	auto f = p.GetFuture();
+	event_manager->SpawnLocal(
+	  [this, &p] () mutable {	      	    
+	    //uint8_t* re = (uint8_t*)&ixgbe_logs[v];
+	    //auto vnum = std::make_unique<StaticIOBuf>(re, sizeof(ixgbe_logs[v]));
+	    //up.SendTo(ebbrt::Ipv4Address({192, 168, 1, 153}), 8080, std::move(vnum));
+	    ebbrt::NetworkManager::UdpPcb up;
+	    up.Bind(0);		    
+	    int len = sizeof(ixgbe_logs[MCPU]);
+	    auto newbuf = ebbrt::MakeUniqueIOBuf(len, false);
+	    std::memcpy(static_cast<void*>(newbuf->MutData()), static_cast<void*>(&ixgbe_logs[v]), len);
+	    ebbrt::kprintf_force("len = %d\n", len);
+	    up.SendTo(ebbrt::Ipv4Address({192, 168, 1, 153}), 8888, std::move(newbuf));
+	    uint8_t* re = (uint8_t*)&ixgbe_logs[v];
+	    for(size_t i = 0; i < 1024; i+=8) {
+	      ebbrt::kprintf_force("0x%X 0x%X 0x%X 0x%X 0x%X 0x%X 0x%X 0x%X \n",
+				   re[i], re[i+1], re[i+2], re[i+3], re[i+4], re[i+5], re[i+6], re[i+7]);
+	    }	    	  
+	    p.SetValue();
+	  });
+	f.Block();      		
+	*/
+	//network_manager->Config("clear_stats", MCPU);
 #endif
 	//ebbrt::kprintf_force("pk0=%lf pk1=%lf work_start=%llu work_end=%llu pk0_start=%llu pk0_end=%llu pk1_start=%llu pk1_end=%llu\n\n", (pk0j_end_-pk0j_start_)*rapl_cpu_energy_units, (pk1j_end_-pk1j_start_)*rapl_cpu_energy_units, work_start, work_end, pk0j_start_, pk0j_end_, pk1j_start_, pk1j_end_);
 	
@@ -161,7 +421,7 @@ private:
 			b->ComputeChainDataLength(), s.c_str());
 	} 
 	/*auto dp = b->GetDataPointer();
-	auto str = reinterpret_cast<const char*>(dp.Get(strlen(sync_string)));
+	  auto str = reinterpret_cast<const char*>(dp.Get(strlen(sync_string)));
 	if (strncmp(sync_string, str, strlen(sync_string))) {
 	  std::string s(reinterpret_cast<const char*>(b->MutData()));
 	  ebbrt::kabort("%d Synchronization String Incorrect! %s\n", b->ComputeChainDataLength(), s.c_str());
@@ -170,7 +430,7 @@ private:
 	///ebbrt::kprintf_force("Received %s\n", s.c_str());
 	//auto buf = ebbrt::IOBuf::Create<ebbrt::StaticIOBuf>(sync_string);
 	Send(std::move(b));
-	Pcb().Output();
+	//Pcb().Output();
 	state_ = REPEAT;
 	break;
       }
@@ -178,7 +438,8 @@ private:
 	if (b->ComputeChainDataLength() < (sizeof(msg_sizes_)
 					   +sizeof(repeat_)
 					   +sizeof(dvfs_)+sizeof(rapl_)
-					   +sizeof(itr_) + (2*sizeof(float)))) {
+					   +sizeof(itr_) +sizeof(iter_)
+					   + (2*sizeof(float)))) {
 	  ebbrt::kabort("Didn't receive full repeat\n");
 	}
 	//ebbrt::kprintf_force("+++ repeat=%d msg_sizes=%d dvfs=0x%X rapl=%d itr=%d pk0=%lf pk1=%lf ", repeat_, msg_sizes_, dvfs_, rapl_, itr_*2, (pk0j_end_-pk0j_start_)*rapl_cpu_energy_units, (pk1j_end_-pk1j_start_)*rapl_cpu_energy_units);
@@ -195,39 +456,43 @@ private:
 	  pk1 = pk1j_end_ - pk1j_start_;
 	}	
 	
-	ebbrt::kprintf_force("%d %d 0x%X %d ", itr_*2, msg_sizes_, dvfs_, rapl_);
-	
+	//ebbrt::kprintf_force("%d %d 0x%X %d ", itr_*2, msg_sizes_, dvfs_, rapl_);
+	ebbrt::kprintf_force("CLIENT_STATS %d ", iter_);
 	auto dp = b->GetDataPointer();
 	msg_sizes_ = dp.Get<size_t>();
 	repeat_ = dp.Get<size_t>();
 	dvfs_ = dp.Get<size_t>();
 	rapl_ = dp.Get<size_t>();
 	itr_ = dp.Get<size_t>();
+	iter_ = dp.Get<size_t>();
 	float tput = dp.Get<float>();
 	float lat = dp.Get<float>();
 	
 	count_ = 0;
 	//ebbrt::kprintf_force("tput=%f lat=%f\n", tput, lat);
-	ebbrt::kprintf_force("%f %f %lf %lf %llu %llu\n", tput, lat, pk0*rapl_cpu_energy_units, pk1*rapl_cpu_energy_units, work_start, work_end);
+	ebbrt::kprintf_force("%f %f %lf %lf %llu %llu\n", tput, lat, pk0*rapl_cpu_energy_units, pk1*rapl_cpu_energy_units);
+	ebbrt::kprintf_force("CLIENT_NAME ITER TPUT LAT PK0J PK1J\n\n");
 	//ebbrt::kprintf_force("+++ Core %u: repeat=%d msg_sizes=%d dvfs=0x%X rapl=%d itr=%d +++\n", static_cast<uint32_t>(ebbrt::Cpu::GetMine())
 	//, repeat_, msg_sizes_, dvfs_, rapl_, itr_*2);
 
-	for (uint32_t i = 0; i < 2; i++) {
+	for (uint32_t i = 0; i < static_cast<uint32_t>(ebbrt::Cpu::Count()); i++) {
+	  ebbrt::Promise<void> p;
+	  auto f = p.GetFuture();
 	  event_manager->SpawnRemote(
-	    [this, i] () mutable {	      	      
+	    [this, i, &p] () mutable {	      	      
 	      if(i == 0 || i == 1) {
 		ebbrt::rapl::RaplCounter powerMeter;
 		powerMeter.SetLimit(rapl_);		
 	      }
 	      if(i == 1) {
 		// same p state as Linux with performance governor
-		ebbrt::msr::Write(IA32_PERF_CTL, dvfs_);
-		network_manager->Config("rx_usecs", itr_);
+		ebbrt::msr::Write(IA32_PERF_CTL, dvfs_);		
 	      }
+	      network_manager->Config("rx_usecs", itr_);
+	      p.SetValue();
 	    }, i);
-	}
-	
-	ebbrt::clock::SleepMilli(1000);
+	  f.Block();
+	}	
 	
 	Send(std::move(b));
 	Pcb().Output();
@@ -254,36 +519,43 @@ private:
 	  if(count_ == 0) {
 	    work_start = ebbrt::rdtsc();
 	    for (uint32_t i = 0; i < 2; i++) {
+	      ebbrt::Promise<void> p;
+	      auto f = p.GetFuture();
 	      event_manager->SpawnRemote(
-		[this, i] () mutable {	      
+		[this, i, &p] () mutable {	      
 		  ebbrt::rapl::RaplCounter powerMeter;
 		  if(i == 0) {
 		    pk0j_start_ = powerMeter.ReadMsr();
 		  } else {
 		    pk1j_start_ = powerMeter.ReadMsr();
 		  }
+		  p.SetValue();
 		}, i);
+	      f.Block();
 	    }
 	  }
 	  if(count_ == repeat_-1) {
 	    work_end = ebbrt::rdtsc();
 	    for (uint32_t i = 0; i < 2; i++) {
+	      ebbrt::Promise<void> p;
+	      auto f = p.GetFuture();
 	      event_manager->SpawnRemote(
-		[this, i] () mutable {	      
+		[this, i, &p] () mutable {	      
 		  ebbrt::rapl::RaplCounter powerMeter;
 		  if(i == 0) {
 		    pk0j_end_ = powerMeter.ReadMsr();
 		  } else {
 		    pk1j_end_ = powerMeter.ReadMsr();
 		  }
+		  p.SetValue();
 		}, i);
+	      f.Block();
 	    }
 	  }
 	  
 	  count_ += 1;
 	  //ebbrt::kprintf_force("repeat=%d chain_len=%d chain_elements=%d\n", repeat_, chain_len, buf_->CountChainElements());
 	  if(msg_sizes_ > MAXS) {
-
 	    size_t total_len = 0;
 	    size_t slen = 0;
 	    std::unique_ptr<IOBuf> tmp;
@@ -294,22 +566,6 @@ private:
 	      tmp = SendLarge(std::move(tmp), slen);
 	      total_len += slen;
 	    }
-	    //ebbrt::kprintf_force("total_len=%d\n", total_len);
-	    
-	    /*size_t tmp_len = msg_sizes_;
-	    while(tmp_len > MAXS) {
-	      auto buf = ebbrt::MakeUniqueIOBuf(MAXS);
-	      memset(buf->MutData(), 'b', MAXS);
-	      Send(std::move(buf));
-	      tmp_len -= MAXS;
-	    }
-	    
-	    if(tmp_len) {
-	      auto buf = ebbrt::MakeUniqueIOBuf(tmp_len);
-	      memset(buf->MutData(), 'b', tmp_len);
-	      Send(std::move(buf));
-	      tmp_len -= tmp_len;
-	      }*/	    
 	  } else {
 	    Send(std::move(buf_));
 	  }
@@ -324,8 +580,7 @@ private:
       }
       }
     }
-      
-    
+          
   private:
     std::unique_ptr<ebbrt::MutIOBuf> buf_;
     ebbrt::NetworkManager::TcpPcb pcb_;
@@ -338,6 +593,7 @@ private:
     size_t dvfs_{0};
     size_t rapl_{0};
     size_t itr_{0};
+    size_t iter_{0};
     uint64_t work_start;
     uint64_t work_end;
     uint64_t pk0j_start_{0};
@@ -347,227 +603,55 @@ private:
     float rapl_cpu_energy_units;
   };
 
-  NetworkManager::ListeningTcpPcb listening_pcb_;  
+  NetworkManager::ListeningTcpPcb listening_pcb_;
 }; 
 }
 
-void AppMain() {
-
-  //ebbrt::NsPerTick();
-    
+void AppMain() {   
   for (uint32_t i = 0; i < static_cast<uint32_t>(ebbrt::Cpu::Count()); i++) {
+    ebbrt::Promise<void> p;
+    auto f = p.GetFuture();
     ebbrt::event_manager->SpawnRemote(
-      [i] () mutable {
+      [i, &p] () mutable {
 	// disables turbo boost, thermal control circuit
 	ebbrt::msr::Write(IA32_MISC_ENABLE, 0x4000850081);
 	// same p state as Linux with performance governor
 	ebbrt::msr::Write(IA32_PERF_CTL, 0x1D00);
 	ebbrt::kprintf_force("Core %u: applied 0x1D00\n", i);
+	p.SetValue();
       }, i);
+    f.Block();
   }
-  ebbrt::clock::SleepMilli(1000);
-  auto d = ebbrt::clock::Wall::Now().time_since_epoch();
-  //auto tstart = std::chrono::duration_cast<std::chrono::microseconds>(d).count();
   
   ebbrt::event_manager->SpawnRemote(
-    [] () mutable {            
-      /*auto uid = ebbrt::ebb_allocator->AllocateLocal();
-      auto udpc = ebbrt::EbbRef<ebbrt::UdpCommand>(uid);
-      udpc->Start(6666);
-      ebbrt::kprintf("Core %u: UdpCommand server listening on port %d\n", static_cast<uint32_t>(ebbrt::Cpu::GetMine()), 6666);
-      */
+    [] () mutable {
+      //ebbrt::NetworkManager::TcpPcb tpcb;            
+      //auto handler = new ebbrt::TcpSender(std::move(tpcb));
+      //handler = new ebbrt::TcpSender(std::move(tpcb));
+      //handler->Install();
       
+      //auto id2 = ebbrt::ebb_allocator->AllocateLocal();
+      //auto mc2 = ebbrt::EbbRef<ebbrt::TcpStat>(id2);
+      //mc2->Start(8080);
+      //ebbrt::kprintf("TcpStat server listening on port %d\n", 8080);
+      
+      /*ebbrt::NetworkManager::UdpPcb up;
+      up.Bind(0);
+      char send_buffer[32];
+      snprintf(send_buffer, sizeof(send_buffer), "start_hello");
+      auto newbuf = ebbrt::MakeUniqueIOBuf(sizeof(send_buffer), false);
+      std::memcpy(static_cast<void*>(newbuf->MutData()), send_buffer, sizeof(send_buffer));
+      ebbrt::kprintf_force("send_buffer = %s\n", send_buffer);
+      up.SendTo(ebbrt::Ipv4Address({192, 168, 1, 153}), 8888, std::move(newbuf));
+      */
       auto id = ebbrt::ebb_allocator->AllocateLocal();
       auto mc = ebbrt::EbbRef<ebbrt::TcpCommand>(id);
       mc->Start(5002);
       ebbrt::kprintf("TcpCommand server listening on port %d\n", 5002);
+
+      tpcb.Connect(ebbrt::Ipv4Address({192, 168, 1, 153}), 8888);
+      handler.reset(new TcpSender(std::move(tpcb)));
+      handler->Install();
+      //handler->TestSend();
     }, MCPU);
 }
-
-	
-// 	// Device level packet fragmentation logic
-// 	/*size_t tmp_len = msg_sizes_;	
-// 	if(tmp_len > MAXS) {
-	  
-	  
-// 	  while(tmp_len > MAXS) {
-// 	    auto buf = ebbrt::MakeUniqueIOBuf(MAXS, true);
-// 	    //memset(buf->MutData(), 'b', MAXS);
-// 	    Send(std::move(buf));
-// 	    tmp_len -= MAXS;
-// 	  }
-	  
-// 	  if(tmp_len) {
-// 	    auto buf = ebbrt::MakeUniqueIOBuf(tmp_len, true);
-// 	    //memset(buf->MutData(), 'b', tmp_len);
-// 	    Send(std::move(buf));
-// 	    tmp_len -= tmp_len;
-// 	  }	    
-// 	  }*/
-	
-	
-	
-// 	/*if(repeat_ == 0) {	  
-// 	  state_ = SYNC;
-// 	  ebbrt::kprintf_force("In SYNC state again\n");
-// 	  }*/
-//       }
- 
-
-      /*if (b->ComputeChainDataLength() > 4) {
-	if(s == "SyncMe" || s == "QUIT") {
-	Send(std::move(b));
-	} else {	
-	  auto rbuf = MakeUniqueIOBuf(b->ComputeChainDataLength(), false);
-	  auto dp = rbuf->GetMutDataPointer();
-	
-	  std::memcpy(static_cast<void*>(dp.Data()), b->MutData(), b->ComputeChainDataLength());
-	  //ebbrt::kprintf_force("b->len=%d rbuf->len=%d s=%s\n", b->ComputeChainDataLength(), rbuf->ComputeChainDataLength(), s.c_str());
-	  Send(std::move(rbuf));
-	}
-	}*/
-
-
-/*
-
-
-*/
-
-/*
-      //auto dp = b->GetDataPointer();
-      //auto str = reinterpret_cast<const char*>(dp.Get(b->Length()));
-      //std::string s(reinterpret_cast<const char*>(b->MutData()));
-      auto len = b->ComputeChainDataLength();
-      if(len > 4 && len < 60) {
-	Send(std::move(b));
-	Pcb().Output();
-	msg_sizes_ = msgs;
-	buf_ = nullptr;
-      } else {	
-	if(buf_) {	  
-	  // more to receive, append to chain
-	  buf_->PrependChain(std::move(b));	  
-	} else {
-	  // first packet in
-	  buf_ = std::move(b);
-	}
-
-	auto chain_len = buf_->ComputeChainDataLength();
-	
-	// application packet size fragmentation logic
-	if(chain_len >= msg_sizes_) { 
-	  if (unlikely(chain_len > msg_sizes_)) {	    
-	    //ebbrt::kprintf_force("chain_len = %d msg_sizes_ = %d\n", chain_len, msg_sizes_);
-	    kassert(chain_len == (msg_sizes_ + strlen(sync_string)));
-	    // mark us as having received the sync and trim off that part
-	    //synced_ = true;
-	    auto tail = buf_->Prev();
-	    auto to_trim = strlen(sync_string);
-
-	    // TODO: Throwing out tail
-	    while (to_trim > 0) {
-	      auto trim = std::max(tail->Length(), to_trim);
-	      tail->TrimEnd(trim);
-	      to_trim -= trim;
-	      tail = tail->Prev();
-	    }
-	  }
-	  kassert(chain_len < MAXS);
-	  Send(std::move(buf_));
-	  Pcb().Output();
-	}
-      }            
-
- */
-
-  /*char send_buffer[4096];
-  
-  void SendData() {
-    ebbrt::NetworkManager::UdpPcb up;
-    up.Bind(0);
-    
-    snprintf(send_buffer, sizeof(send_buffer), "Core=%u itr_cnt=%lu total_rx_bytes=%lu total_tx_bytes=%lu\n", MCPU, ixgbe_dev->ixgmq[MCPU]->itr_stats.size(), ixgbe_dev->ixgmq[MCPU]->total_rx_bytes, ixgbe_dev->ixgmq[MCPU]->total_tx_bytes);
-    
-    int len = strlen(send_buffer);    
-    if((len & 0x1)) {
-      kassert(len+1 < 4096);      
-      char c = send_buffer[len];      
-      send_buffer[len] = ' ';
-      len ++;
-      send_buffer[len] = c;
-    }
-    
-    auto newbuf = MakeUniqueIOBuf(len, false);
-    std::memcpy(static_cast<void*>(newbuf->MutData()), send_buffer, len);
-    ebbrt::kprintf_force("send_buffer = %s\n", send_buffer);
-    up.SendTo(ebbrt::Ipv4Address({192, 168, 1, 153}), 8888, std::move(newbuf));
-
-    uint32_t c = 0;
-    for(auto a : ixgbe_dev->ixgmq[MCPU]->itr_stats) {
-      snprintf(send_buffer, sizeof(send_buffer),"%u %u %lu %u %lu %lu %lu %lu %lu %lu\n",
-	       c,
-	       a.rx_desc,
-	       a.rx_bytes,
-	       a.tx_desc,
-	       a.tx_bytes,
-	       a.ninstructions,
-	       a.ncycles,
-	       a.nllc_miss,
-	       a.joules,
-	       a.itr_time_us);
-
-      len = strlen(send_buffer);    
-      if((len & 0x1)) {
-	kassert(len+1 < 4096);      
-	c = send_buffer[len];      
-	send_buffer[len] = ' ';
-	len ++;
-	send_buffer[len] = c;
-      }
-      
-      newbuf = MakeUniqueIOBuf(len, false);
-      std::memcpy(static_cast<void*>(newbuf->MutData()), send_buffer, len);
-      ebbrt::kprintf_force("send_buffer = %s\n", send_buffer);
-      up.SendTo(ebbrt::Ipv4Address({192, 168, 1, 153}), 8888, std::move(newbuf));
-      
-      c ++;
-      if(c == 10) break;
-      }*/
-	  
-    /*static int sockfd = -1;
-
-    ebbrt::kprintf_force("SendData\n");
-
-    if(sockfd == -1) {
-      struct sockaddr_in localAddr;
-      struct sockaddr_in dest_addr;
-      
-      memset(&localAddr, 0, sizeof(localAddr));
-      memset(&dest_addr, 0, sizeof(struct sockaddr_in));
-      
-      // assign IP, PORT
-      dest_addr.sin_family = AF_INET;
-      dest_addr.sin_addr.s_addr = inet_addr("192.168.1.153");
-      dest_addr.sin_port = htons(12345);
-      
-      sockfd = socket(AF_INET, SOCK_STREAM, 0);
-      kassert(sockfd>=0);
-      
-      localAddr.sin_family = AF_INET;
-      localAddr.sin_addr.s_addr = htonl(INADDR_ANY);
-      localAddr.sin_port = htons(0);
-      
-      int rc = bind(sockfd, (struct sockaddr *)&localAddr, sizeof(localAddr));
-      kassert(rc>=0);
-    
-    
-      // connect the client socket to server socket
-      if (connect(sockfd, (struct sockaddr *)&dest_addr, sizeof(dest_addr)) < 0) {
-	ebbrt::kabort("connection with the server failed...\n");
-      }
-      ebbrt::kprintf_force("Connected\n");
-    }
-    
-    int n=write(sockfd, send_buffer, len);
-    kassert(n==len);    */
-//  }
