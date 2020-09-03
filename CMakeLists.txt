@@ -8,7 +8,8 @@ set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O2 -g3")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=gnu++14 -Wall -Werror")
 
 include_directories(${PROJECT_SRC_DIR})
-add_executable(server_netpipe.elf src/server_netpipe.cc src/UdpCommand.cc)
+#add_executable(server_netpipe.elf src/server_netpipe.cc src/UdpCommand.cc)
+add_executable(server_netpipe.elf src/server_netpipe.cc src/TcpServer.cc)
 add_executable(client_netpipe.elf src/client_netpipe.cc)
 
 add_custom_command(TARGET server_netpipe.elf POST_BUILD 
