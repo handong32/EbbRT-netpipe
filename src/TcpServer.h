@@ -48,6 +48,7 @@
 #define MSR_PKGC6_IRTL 0x60B
 
 extern char* data_logs[10];
+extern int readyToSocat;
 
 namespace ebbrt {
 class TcpServer : public StaticSharedEbb<TcpServer>, public CacheAligned {

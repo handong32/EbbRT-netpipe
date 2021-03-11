@@ -107,21 +107,26 @@ void ebbrt::TcpServer::TcpSession::Receive(std::unique_ptr<MutIOBuf> b) {
     uint64_t msg_size = sizeof(ixgbe_logs);
     uint64_t sum = 0;
     uint64_t maxs = 262144;
-    for(uint64_t i = 0; i < msg_size; i++) {
-      sum += re[i];
+
+    if (readyToSocat == 1) {
+      for(uint64_t i = 0; i < msg_size; i++) {
+	sum += re[i];
+      }
+      ebbrt::kprintf_force("get param=%u re=0x%X msg_size=%lu sum=%llu\n", param, (void*)re, msg_size, sum);
+      while(msg_size > maxs) {
+	auto buf = std::make_unique<ebbrt::StaticIOBuf>(re, maxs);
+	Send(std::move(buf));      
+	msg_size -= maxs;
+	re += maxs;
+      }
+      if(msg_size) {
+	auto buf = std::make_unique<ebbrt::StaticIOBuf>(re, msg_size);
+	Send(std::move(buf));
+      }
+      readyToSocat = 0;
+    } else {
+      ebbrt::kprintf_force("TcpServer get: readyToSocat = %d\n", readyToSocat);
     }
-    ebbrt::kprintf_force("get param=%u re=0x%X msg_size=%lu sum=%llu\n", param, (void*)re, msg_size, sum);
-    while(msg_size > maxs) {
-      auto buf = std::make_unique<ebbrt::StaticIOBuf>(re, maxs);
-      Send(std::move(buf));      
-      msg_size -= maxs;
-      re += maxs;
-    }
-    if(msg_size) {
-      auto buf = std::make_unique<ebbrt::StaticIOBuf>(re, msg_size);
-      Send(std::move(buf));
-    }
-    
   } else {
     ebbrt::kprintf_force("Unknown command %s\n", token1.c_str());
   }

@@ -40,6 +40,7 @@ const constexpr char sync_string[] = "SyncMe";
 }
 
 bool send_stat = false;
+int readyToSocat = 0;
 
 class TcpSender : public ebbrt::TcpHandler {
 public:
@@ -204,9 +205,7 @@ private:
 	for(uint64_t i = 0; i < ixgbe_logs.itr_cnt; i++) {
 	  sum_rxb += ixgbe_logs.log[i].Fields.rx_bytes;
 	  sum_txb += ixgbe_logs.log[i].Fields.tx_bytes;
-	}
-		       	
-	ebbrt::kprintf_force("SendLog: i=%u msg_size=%llu sum=%llu itr_cnt=%u sum_rxb=%llu sum_txb=%llu tput=%f lat=%f pk0=%f pk1=%f\n", il->iter, msg_size, sum, ixgbe_logs.itr_cnt, sum_rxb, sum_txb, il->tput, il->lat, il->pk0j, il->pk1j);
+	}		       		
 
 	/*data_logs[il->iter] = (char*)malloc(sizeof(ixgbe_logs) * sizeof(char));
 	memcpy(data_logs[il->iter], &ixgbe_logs, sizeof(ixgbe_logs));
@@ -216,18 +215,22 @@ private:
 	  sum += re[i];
 	}
 	ebbrt::kprintf_force("SendLog: i=%u msg_size=%llu sum=%llu re=0x%X\n", il->iter, msg_size, sum, (void*)re);	*/
-	ebbrt::clock::SleepMilli(1000);	
+	ebbrt::clock::SleepMilli(1000);
+	ebbrt::kprintf_force("SendLog: i=%u msg_size=%llu sum=%llu itr_cnt=%u sum_rxb=%llu sum_txb=%llu tput=%f lat=%f pk0=%f pk1=%f\n", il->iter, msg_size, sum, ixgbe_logs.itr_cnt, sum_rxb, sum_txb, il->tput, il->lat, il->pk0j, il->pk1j);
 #endif	
 	Send(std::move(b));
 	state_ = SYNC;
+	readyToSocat = 1;
+        ebbrt::kprintf_force("readyToSocat = %d\n", readyToSocat);
 	break;
-      }
-      case SYNC: {
+      }	
+      case SYNC: { //start of new experiment
 	if (b->ComputeChainDataLength() != strlen(sync_string)) {
 	  std::string s(reinterpret_cast<const char*>(b->MutData()));
 	  ebbrt::kabort("Didn't receive full sync string %d %s\n",
 			b->ComputeChainDataLength(), s.c_str());
-	} 
+	}
+	readyToSocat = 0;
 
 	Send(std::move(b));
 	state_ = REPEAT;
@@ -304,7 +307,7 @@ private:
 #ifdef WITHLOGGING
 	  // we receive a full packet
 	  if(count_ == 0) {
-	    work_start = ebbrt::rdtsc();
+	    work_start = ebbrt::trace::rdtsc();
 	    for (uint32_t i = 0; i < 2; i++) {
 	      ebbrt::Promise<void> p;
 	      auto f = p.GetFuture();
@@ -322,7 +325,7 @@ private:
 	    }
 	  }
 	  if(count_ == repeat_-1) {
-	    work_end = ebbrt::rdtsc();
+	    work_end = ebbrt::trace::rdtsc();
 	    for (uint32_t i = 0; i < 2; i++) {
 	      ebbrt::Promise<void> p;
 	      auto f = p.GetFuture();
@@ -434,5 +437,5 @@ void AppMain() {
       tcps->Start(8889);
       ebbrt::kprintf("TcpServer listening on port %d\n", 8889);
         
-    }, MCPU);  
+    }, MCPU);
 }
