@@ -1,7 +1,7 @@
 ####
 A badly written netpipe implementation for EbbRT
 
-## Build
+## Build (requires EbbRT sysroot to be built first)
 
 ```
 $ mkdir build && cd build
