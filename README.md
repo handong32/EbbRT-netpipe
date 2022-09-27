@@ -10,4 +10,5 @@ $ make -j8 server_netpipe.elf
 $ make -j8 client_netpipe.elf
 ```
 
-
+## Running
+`client_netpipe.cc` encodes in its main loop the possible combinations of message size, DVFS, and ITR settings to run. `server_netpipe.cc` just echos back the message size. After each experiment of a single message size, another computer can use `socat` to retrieve the trace logs from `server_netpipe.cc`.
