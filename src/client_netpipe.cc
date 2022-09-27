@@ -100,12 +100,13 @@ namespace ebbrt {
       //ebbrt::kprintf_force("SendRepeat() complete\n");
     }
     
-    void SendData(float tput, float lat) {
+    void SendData(float tput, float lat, uint64_t tdiff) {
       state_ = DATA;
-      auto buf = ebbrt::MakeUniqueIOBuf(sizeof(tput) + sizeof(lat));
+      auto buf = ebbrt::MakeUniqueIOBuf(sizeof(tput) + sizeof(lat) + sizeof(tdiff));
       auto dp = buf->GetMutDataPointer();
       dp.Get<float>() = tput;
       dp.Get<float>() = lat;
+      dp.Get<uint64_t>() = tdiff;      
       Send(std::move(buf));
       Pcb().Output();
       ebbrt::event_manager->SaveContext(context_);
@@ -179,8 +180,6 @@ namespace ebbrt {
       buf_ = nullptr;
       //ebbrt::kprintf_force("total bytes: %llu ", total_bytes);
     }    
-    
-    
     
     void Wait() {
       ebbrt::event_manager->SaveContext(context_);
@@ -290,272 +289,89 @@ void AppMain() {
 	tdiff2 = tdiff2 / static_cast<float>(iters) / 2.0;      
 	bits = tsz * 8;
 	bps = static_cast<float>(bits) / (tdiff2 * 1024 * 1024);
-	handler->SendData(bps, (tdiff2 * 1000000.0));
-	ebbrt::kprintf_force("%7u bytes %6d times in %8.2f Mbps in %10.6f usec\n", tsz, iters, bps, (tdiff2 * 1000000.0));
+	handler->SendData(bps, (tdiff2 * 1000000.0), t2-t1);
+	ebbrt::kprintf_force("%7u bytes %6d times in %8.2f Mbps in %10.6f secs\n", tsz, iters, bps, ((t2-t1) / 1000000.0));
+	//ebbrt::kprintf_force("%7u bytes %6d times in %8.2f Mbps in %10.6f usec\n", tsz, iters, bps, (tdiff2 * 1000000.0));
       }
       
       // for logging
-      /*handler->msg_sizes.push_back(64);
-      handler->msg_sizes.push_back(8192);
-      handler->msg_sizes.push_back(65536);      
-      handler->msg_sizes.push_back(524288);
-      iters = 5000;      
-      
-      handler->itrs.push_back(4);
-      handler->itrs.push_back(6);
-      handler->itrs.push_back(8);
-      handler->itrs.push_back(10);
-      handler->itrs.push_back(12);
-      handler->itrs.push_back(14);
-      handler->itrs.push_back(16);
-      handler->itrs.push_back(18);
-      handler->itrs.push_back(20);
-      handler->itrs.push_back(30);
-      handler->itrs.push_back(40);
-      handler->itrs.push_back(50);
-      //handler->itrs.push_back(100);*/
-//0x1d00 0x1c00 0x1b00 0x1a00 0x1900 0x1800 0x1700 0x1600 0x1500 0x1400 0x1300 0x1200 0x1100 0x1000 0xf00 0xe00 0xd00 0xc00
-
-      /*
-      handler->dvfss.push_back(0x1c00);
-      handler->dvfss.push_back(0x1b00);
-      handler->dvfss.push_back(0x1a00);
-      handler->dvfss.push_back(0x1900);
-      handler->dvfss.push_back(0x1800);*/
-      /*handler->dvfss.push_back(0x1700);
-      handler->dvfss.push_back(0x1600);
-      handler->dvfss.push_back(0x1500);
-      handler->dvfss.push_back(0x1400);*/
-
-      //handler->dvfss.push_back(0x1300);
-
-      //handler->dvfss.push_back(0x1200);
-      //handler->dvfss.push_back(0x1100);
-      //handler->dvfss.push_back(0x1000);
-      //handler->dvfss.push_back(0xf00);
-      
-      //handler->dvfss.push_back(0xe00);
-      //handler->dvfss.push_back(0xd00);
-      //handler->dvfss.push_back(0xc00);
-      //handler->rapls.push_back(45);
-      
-      //handler->DoTest();
-      //iters = 5000;
-      //iter = 3;
-
-      /*rapl = 135;
-      
-      tsz = 64;
-      itr = 3;
-      dvfs = 0x1d00;
-      for (uint32_t cpu = 0; cpu < static_cast<uint32_t>(ebbrt::Cpu::Count()); cpu++) {
-	ebbrt::Promise<void> p;
-	auto f = p.GetFuture();
-	ebbrt::event_manager->SpawnRemote(
-	  [itr, &p] () mutable {
-	    ebbrt::network_manager->Config("rx_usecs", itr);
-	    p.SetValue();
-		}, cpu);
-	f.Block();
-      }
-      
-      for(size_t c=0;c<iter;c++) {	
-	handler->Sync(c, tsz, itr*2, dvfs, rapl);
-	handler->SendRepeat(tsz, iters, dvfs, rapl, itr, c);
-	s1 = ebbrt::clock::Wall::Now().time_since_epoch();
-	t1 = std::chrono::duration_cast<std::chrono::microseconds>(s1).count();
-	handler->DoSend(tsz, iters);
-	s2 = ebbrt::clock::Wall::Now().time_since_epoch();
-	t2 = std::chrono::duration_cast<std::chrono::microseconds>(s2).count();
-	tdiff = t2 - t1;
-	tdiff2 = static_cast<float>(tdiff) / 1000000.0;
-	tdiff2 = tdiff2 / static_cast<float>(iters) / 2.0;
-	
-	bits = tsz * 8;
-	bps = static_cast<float>(bits) / (tdiff2 * 1024 * 1024);
-	
-	handler->SendData(bps, (tdiff2 * 1000000.0));
-	ebbrt::kprintf_force("%.4lf %.10lf\n", bps, tdiff2);
-
-	ebbrt::kprintf_force("i=%u MSG=%u ITR=%u DVFS=0x%x RAPL=%u sleeping 15s\n",
-			     c, tsz, itr*2, dvfs, rapl);
-	ebbrt::clock::SleepMilli(15000);
-      }
-
-      tsz = 8192;
-      itr = 3;
-      dvfs = 0x1600;
-      for (uint32_t cpu = 0; cpu < static_cast<uint32_t>(ebbrt::Cpu::Count()); cpu++) {
-	ebbrt::Promise<void> p;
-	auto f = p.GetFuture();
-	ebbrt::event_manager->SpawnRemote(
-	  [itr, &p] () mutable {
-	    ebbrt::network_manager->Config("rx_usecs", itr);
-	    p.SetValue();
-		}, cpu);
-	f.Block();
-      }
-      for(size_t c=0;c<iter;c++) {	
-	handler->Sync(c, tsz, itr*2, dvfs, rapl);
-	handler->SendRepeat(tsz, iters, dvfs, rapl, itr, c);
-	s1 = ebbrt::clock::Wall::Now().time_since_epoch();
-	t1 = std::chrono::duration_cast<std::chrono::microseconds>(s1).count();
-	handler->DoSend(tsz, iters);
-	s2 = ebbrt::clock::Wall::Now().time_since_epoch();
-	t2 = std::chrono::duration_cast<std::chrono::microseconds>(s2).count();
-	tdiff = t2 - t1;
-	tdiff2 = static_cast<float>(tdiff) / 1000000.0;
-	tdiff2 = tdiff2 / static_cast<float>(iters) / 2.0;
-	
-	bits = tsz * 8;
-	bps = static_cast<float>(bits) / (tdiff2 * 1024 * 1024);
-	
-	handler->SendData(bps, (tdiff2 * 1000000.0));
-	ebbrt::kprintf_force("%.4lf %.10lf\n", bps, tdiff2);
-	ebbrt::kprintf_force("i=%u MSG=%u ITR=%u DVFS=0x%x RAPL=%u sleeping 15s\n",
-			     c, tsz, itr*2, dvfs, rapl);
-	ebbrt::clock::SleepMilli(15000);
-      }
-
-      tsz = 65536;
-      itr = 3;
-      dvfs = 0xC00;
-      for (uint32_t cpu = 0; cpu < static_cast<uint32_t>(ebbrt::Cpu::Count()); cpu++) {
-	ebbrt::Promise<void> p;
-	auto f = p.GetFuture();
-	ebbrt::event_manager->SpawnRemote(
-	  [itr, &p] () mutable {
-	    ebbrt::network_manager->Config("rx_usecs", itr);
-	    p.SetValue();
-		}, cpu);
-	f.Block();
-      }
-      for(size_t c=0;c<iter;c++) {	
-	handler->Sync(c, tsz, itr*2, dvfs, rapl);
-	handler->SendRepeat(tsz, iters, dvfs, rapl, itr, c);
-	s1 = ebbrt::clock::Wall::Now().time_since_epoch();
-	t1 = std::chrono::duration_cast<std::chrono::microseconds>(s1).count();
-	handler->DoSend(tsz, iters);
-	s2 = ebbrt::clock::Wall::Now().time_since_epoch();
-	t2 = std::chrono::duration_cast<std::chrono::microseconds>(s2).count();
-	tdiff = t2 - t1;
-	tdiff2 = static_cast<float>(tdiff) / 1000000.0;
-	tdiff2 = tdiff2 / static_cast<float>(iters) / 2.0;
-	
-	bits = tsz * 8;
-	bps = static_cast<float>(bits) / (tdiff2 * 1024 * 1024);
-	
-	handler->SendData(bps, (tdiff2 * 1000000.0));
-	ebbrt::kprintf_force("%.4lf %.10lf\n", bps, tdiff2);
-	ebbrt::kprintf_force("i=%u MSG=%u ITR=%u DVFS=0x%x RAPL=%u sleeping 15s\n",
-			     c, tsz, itr*2, dvfs, rapl);
-	ebbrt::clock::SleepMilli(15000);
-      }
-
-      tsz = 524288;
-      itr = 12;
-      dvfs = 0xC00;
-      for (uint32_t cpu = 0; cpu < static_cast<uint32_t>(ebbrt::Cpu::Count()); cpu++) {
-	ebbrt::Promise<void> p;
-	auto f = p.GetFuture();
-	ebbrt::event_manager->SpawnRemote(
-	  [itr, &p] () mutable {
-	    ebbrt::network_manager->Config("rx_usecs", itr);
-	    p.SetValue();
-		}, cpu);
-	f.Block();
-      }
-      for(size_t c=0;c<iter;c++) {	
-	handler->Sync(c, tsz, itr*2, dvfs, rapl);
-	handler->SendRepeat(tsz, iters, dvfs, rapl, itr, c);
-	s1 = ebbrt::clock::Wall::Now().time_since_epoch();
-	t1 = std::chrono::duration_cast<std::chrono::microseconds>(s1).count();
-	handler->DoSend(tsz, iters);
-	s2 = ebbrt::clock::Wall::Now().time_since_epoch();
-	t2 = std::chrono::duration_cast<std::chrono::microseconds>(s2).count();
-	tdiff = t2 - t1;
-	tdiff2 = static_cast<float>(tdiff) / 1000000.0;
-	tdiff2 = tdiff2 / static_cast<float>(iters) / 2.0;
-	
-	bits = tsz * 8;
-	bps = static_cast<float>(bits) / (tdiff2 * 1024 * 1024);
-	
-	handler->SendData(bps, (tdiff2 * 1000000.0));
-	ebbrt::kprintf_force("%.4lf %.10lf\n", bps, tdiff2);
-	ebbrt::kprintf_force("i=%u MSG=%u ITR=%u DVFS=0x%x RAPL=%u sleeping 15s\n",
-			     c, tsz, itr*2, dvfs, rapl);
-	ebbrt::clock::SleepMilli(15000);
-	}*/
       
       // itr == 3 * 2 == 6 us, minimum for RSC to work
-      handler->itrs.push_back(0);
+      //handler->itrs.push_back(0);
+      //handler->itrs.push_back(1);
+      //handler->itrs.push_back(2);
+      handler->itrs.push_back(3);
       //handler->itrs.push_back(4);
-      //handler->itrs.push_back(5);
+      handler->itrs.push_back(5);
       //handler->itrs.push_back(6);
-      //handler->itrs.push_back(7);
+      handler->itrs.push_back(7);
       //handler->itrs.push_back(8);
-      //handler->itrs.push_back(9);
+      handler->itrs.push_back(9);
       //handler->itrs.push_back(10);
-      //handler->itrs.push_back(11);
+      handler->itrs.push_back(11);
       //handler->itrs.push_back(12);
-      //handler->itrs.push_back(13);
+      handler->itrs.push_back(13);
       //handler->itrs.push_back(14);
-      //handler->itrs.push_back(15);
+      handler->itrs.push_back(15);
       //handler->itrs.push_back(16);
-      //handler->itrs.push_back(17);
+      handler->itrs.push_back(17);
       //handler->itrs.push_back(18);
-      //handler->itrs.push_back(19);
+      handler->itrs.push_back(19);
       //handler->itrs.push_back(20);
       
-      //handler->dvfss.push_back(0x1d00);      
+      handler->dvfss.push_back(0x1d00);
+      handler->dvfss.push_back(0x1b00);
+      handler->dvfss.push_back(0x1900);
+      handler->dvfss.push_back(0x1700);
+      handler->dvfss.push_back(0x1500);
+      handler->dvfss.push_back(0x1300);
+      handler->dvfss.push_back(0x1100);
+      handler->dvfss.push_back(0xf00);
+      handler->dvfss.push_back(0xd00);
       handler->dvfss.push_back(0xc00);
-      //handler->dvfss.push_back(0xf00);
-      //handler->dvfss.push_back(0x1000);
-      //handler->dvfss.push_back(0x1100);
-      //handler->dvfss.push_back(0x1200);
-      //handler->dvfss.push_back(0x1400);
-      //handler->dvfss.push_back(0x1600);
-      //handler->dvfss.push_back(0x1700);
-      //handler->dvfss.push_back(0x1800);
-      //handler->dvfss.push_back(0x1900);
-      //handler->dvfss.push_back(0x1a00);
-      //handler->dvfss.push_back(0x1b00);
-      //handler->dvfss.push_back(0x1c00);
-      //handler->dvfss.push_back(0x1d00);
       
       handler->rapls.push_back(135);
-      //handler->rapls.push_back(55);
 
-      handler->msg_sizes.push_back(64);
-      handler->msg_sizes.push_back(8192);
-      handler->msg_sizes.push_back(65536);      
-      //handler->msg_sizes.push_back(524288);
+      //handler->msg_sizes.push_back(64);
+      //handler->msg_sizes.push_back(128);
+      //handler->msg_sizes.push_back(256);
+      //handler->msg_sizes.push_back(512);
+      //handler->msg_sizes.push_back(1024);
+      //handler->msg_sizes.push_back(2048);
+      //handler->msg_sizes.push_back(4096);
+      //handler->msg_sizes.push_back(8192);
+      //handler->msg_sizes.push_back(16384);
+      //handler->msg_sizes.push_back(32768);
+      handler->msg_sizes.push_back(65536);
+      //handler->msg_sizes.push_back(131072);
+      //handler->msg_sizes.push_back(262144);
+      handler->msg_sizes.push_back(524288);
       
       iters = 5000;
       // number of times to repeat experiment
       iter = 2;
       
-      //ebbrt::kprintf_force("iter msg_size iterations dvfs rapl itr tput lat\n");            
-      for(size_t r = 0; r < handler->rapls.size(); r++) {
-	rapl = handler->rapls[r];
-	for(size_t d = 0; d < handler->dvfss.size(); d++) {
-	  dvfs = handler->dvfss[d];	
-	  for(size_t j = 0; j < handler->itrs.size(); j++) {
-	    itr = handler->itrs[j];
-	    
-	    for (uint32_t cpu = 0; cpu < static_cast<uint32_t>(ebbrt::Cpu::Count()); cpu++) {
-	      ebbrt::Promise<void> p;
-	      auto f = p.GetFuture();
-	      ebbrt::event_manager->SpawnRemote(
-		[itr, &p] () mutable {
-		  ebbrt::network_manager->Config("rx_usecs", itr);
-		  p.SetValue();
-		}, cpu);
-	      f.Block();
-	    }
-	    
-	    for(size_t i = 0; i < handler->msg_sizes.size(); i++) {
+      //ebbrt::kprintf_force("iter msg_size iterations dvfs rapl itr tput lat\n");
+      for(size_t j = 0; j < handler->itrs.size(); j++) {
+	itr = handler->itrs[j];	
+	
+	for(size_t i = 0; i < handler->msg_sizes.size(); i++) {
+	  for(size_t r = 0; r < handler->rapls.size(); r++) {
+	    rapl = handler->rapls[r];
+	    for(size_t d = 0; d < handler->dvfss.size(); d++) {
+	      dvfs = handler->dvfss[d];	    
 	      tsz = handler->msg_sizes[i];
+	      
+	      for (uint32_t cpu = 0; cpu < static_cast<uint32_t>(ebbrt::Cpu::Count()); cpu++) {
+		ebbrt::Promise<void> p;
+		auto f = p.GetFuture();
+		ebbrt::event_manager->SpawnRemote(
+		  [itr, &p] () mutable {
+		    ebbrt::network_manager->Config("rx_usecs", itr);
+		    p.SetValue();
+		  }, cpu);
+		f.Block();
+	      }
 	      
 	      for(size_t c=0;c<iter;c++) {
 		//ebbrt::kprintf_force
@@ -574,15 +390,16 @@ void AppMain() {
 		t2 = std::chrono::duration_cast<std::chrono::microseconds>(s2).count();
 		tdiff = t2 - t1;
 		tdiff2 = static_cast<float>(tdiff) / 1000000.0;
-		tdiff2 = tdiff2 / static_cast<float>(iters) / 2.0;
-		
+		tdiff2 = tdiff2 / static_cast<float>(iters) / 2.0;		
 		bits = tsz * 8;
 		bps = static_cast<float>(bits) / (tdiff2 * 1024 * 1024);
 		
-		handler->SendData(bps, (tdiff2 * 1000000.0));
-		ebbrt::kprintf_force("i=%u MSG=%u ITR=%u DVFS=0x%x RAPL=%u sleeping 2s .... \n",
-			     c, tsz, itr*2, dvfs, rapl);
-		ebbrt::clock::SleepMilli(2000);
+		handler->SendData(bps, (tdiff2 * 1000000.0), t2-t1);
+		ebbrt::kprintf_force("itr=%4u: %7u bytes %6d times in %8.2f Mbps in %10.6f secs\n", itr*2, tsz, iters, bps, ((t2-t1) / 1000000.0));
+		
+		//ebbrt::kprintf_force("i=%u MSG=%u ITR=%u DVFS=0x%x RAPL=%u\n",
+		//		     c, tsz, itr*2, dvfs, rapl);
+		//ebbrt::clock::SleepMilli(2000);
 		//auto ss2 = ebbrt::clock::Wall::Now().time_since_epoch();
 		//uint64_t tt2 = std::chrono::duration_cast<std::chrono::microseconds>(ss2).count();
 		//uint64_t ttdiff = t2 - t1;

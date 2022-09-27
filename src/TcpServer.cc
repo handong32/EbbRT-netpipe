@@ -10,10 +10,11 @@ void ebbrt::TcpServer::Start(uint16_t port) {
   listening_pcb_.Bind(port, [this](NetworkManager::TcpPcb pcb) {
     // new connection callback
     static std::atomic<size_t> cpu_index{0};
-    auto index = 1; //cpu_index.fetch_add(1) % ebbrt::Cpu::Count();
+    auto index = MCPU; //cpu_index.fetch_add(1) % ebbrt::Cpu::Count();
     pcb.BindCpu(index);
     auto connection = new TcpSession(this, std::move(pcb));
     connection->Install();
+    ebbrt::kprintf_force("Core %u: TcpServer connection created\n", static_cast<uint32_t>(ebbrt::Cpu::GetMine()));
   });
 }
 
@@ -38,22 +39,19 @@ void ebbrt::TcpServer::TcpSession::Receive(std::unique_ptr<MutIOBuf> b) {
     //for (uint32_t i = 0; i < ncores; i++) {
     //  network_manager->Config("start_stats", i);
     //}
-    network_manager->Config("start_stats", 1);
-    
+    network_manager->Config("start_stats", 1);    
   } else if (token1 == "stop") {
     ebbrt::kprintf_force("stop()\n");
     //for (uint32_t i = 0; i < ncores; i++) {
     //  network_manager->Config("stop_stats", i);
     //}
-    network_manager->Config("stop_stats", 1);
-    
+    network_manager->Config("stop_stats", 1);    
   } else if (token1 == "clear") {
     ebbrt::kprintf_force("clear()\n");
     //for (uint32_t i = 0; i < ncores; i++) {
     //  network_manager->Config("clear_stats", i);
     // }
-    network_manager->Config("clear_stats", 1);
-    
+    network_manager->Config("clear_stats", 1);    
   } else if (token1 == "rx_usecs") {
     ebbrt::kprintf_force("itr %u\n", param);
     /*for (uint32_t i = 0; i < ncores; i++) {
@@ -65,7 +63,7 @@ void ebbrt::TcpServer::TcpSession::Receive(std::unique_ptr<MutIOBuf> b) {
     event_manager->SpawnRemote(
       [token1, param] () mutable {
 	network_manager->Config(token1, param);
-      }, 1);
+      }, MCPU);
     
   } else if (token1 == "dvfs") {
     ebbrt::kprintf_force("dvfs %u\n", param);
@@ -74,7 +72,7 @@ void ebbrt::TcpServer::TcpSession::Receive(std::unique_ptr<MutIOBuf> b) {
       [param] () mutable {
 	// same p state as Linux with performance governor
 	ebbrt::msr::Write(IA32_PERF_CTL, param);    
-      }, 1);
+      }, MCPU);
       //}
     
   } else if (token1 == "rapl") {

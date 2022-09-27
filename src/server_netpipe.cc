@@ -30,10 +30,6 @@
 char* data_logs[10];
 
 //#define MAXS 16384
-#define MAXS 262144
-#define MCPU 1
-
-#define WITHLOGGING
 
 namespace {
 const constexpr char sync_string[] = "SyncMe";
@@ -105,7 +101,7 @@ public:
 	pcb.BindCpu(MCPU);
 	auto connection = new TcpSession(this, std::move(pcb));
 	connection->Install();
-	//ebbrt::kprintf_force("Core %u: Connection created\n", static_cast<uint32_t>(ebbrt::Cpu::GetMine()));
+	ebbrt::kprintf_force("Core %u: TcpCommand connection created\n", static_cast<uint32_t>(ebbrt::Cpu::GetMine()));
       });
   }
 
@@ -149,7 +145,8 @@ private:
       
       switch(state_) {
       case DATA: {
-#ifdef WITHLOGGING	
+
+/*#ifdef WITHLOGGING	
 	for (uint32_t i = 0; i < static_cast<uint32_t>(ebbrt::Cpu::Count()); i++) {
 	  ebbrt::Promise<void> p;
 	  auto f = p.GetFuture();
@@ -207,21 +204,70 @@ private:
 	  sum_txb += ixgbe_logs.log[i].Fields.tx_bytes;
 	}		       		
 
-	/*data_logs[il->iter] = (char*)malloc(sizeof(ixgbe_logs) * sizeof(char));
-	memcpy(data_logs[il->iter], &ixgbe_logs, sizeof(ixgbe_logs));
-	sum = 0;
-	re = (uint8_t*)(data_logs[il->iter]);    
-	for(uint64_t i = 0; i < msg_size; i++) {
-	  sum += re[i];
-	}
-	ebbrt::kprintf_force("SendLog: i=%u msg_size=%llu sum=%llu re=0x%X\n", il->iter, msg_size, sum, (void*)re);	*/
-	ebbrt::clock::SleepMilli(1000);
+	//data_logs[il->iter] = (char*)malloc(sizeof(ixgbe_logs) * sizeof(char));
+	//memcpy(data_logs[il->iter], &ixgbe_logs, sizeof(ixgbe_logs));
+	//sum = 0;
+	//re = (uint8_t*)(data_logs[il->iter]);    
+	//for(uint64_t i = 0; i < msg_size; i++) {
+	//  sum += re[i];
+	//}
+	//ebbrt::kprintf_force("SendLog: i=%u msg_size=%llu sum=%llu re=0x%X\n", il->iter, msg_size, sum, (void*)re);
+	//ebbrt::clock::SleepMilli(1000);
 	ebbrt::kprintf_force("SendLog: i=%u msg_size=%llu sum=%llu itr_cnt=%u sum_rxb=%llu sum_txb=%llu tput=%f lat=%f pk0=%f pk1=%f\n", il->iter, msg_size, sum, ixgbe_logs.itr_cnt, sum_rxb, sum_txb, il->tput, il->lat, il->pk0j, il->pk1j);
-#endif	
+	#endif*/
+
+	/*uint64_t pk0, pk1;
+	if(pk0j_end_ < pk0j_start_) {
+	  pk0 = (UINT32_MAX+pk0j_end_) - pk0j_start_;
+	} else {
+	  pk0 = pk0j_end_ - pk0j_start_;
+	}
+
+	if(pk1j_end_ < pk1j_start_) {
+	  pk1 = (UINT32_MAX+pk1j_end_) - pk1j_start_;
+	} else {
+
+	  pk1 = pk1j_end_ - pk1j_start_;
+	  }*/
+
+	//uint64_t sum_rxb, sum_txb;
+	//uint64_t sum_ins, sum_cyc;
+	//uint64_t sum_ref_cyc, sum_llc_miss;
+	//sum_rxb = sum_txb = 0;	
+	//for(uint64_t i = 0; i < ixgbe_stats[MCPU].itr_cnt; i++) {
+	//  sum_rxb += ixgbe_logs[MCPU][i].Fields.rx_bytes;
+	//  sum_txb += ixgbe_logs[MCPU][i].Fields.tx_bytes;
+//	}
+	
+	auto dp = b->GetDataPointer();
+	float tput = dp.Get<float>();
+	float lat = dp.Get<float>();
+	uint64_t tdiff = dp.Get<uint64_t>();
+	
+	uint64_t pk0, pk1;
+	if(pk0j_end_ < pk0j_start_) {
+	  pk0 = (UINT32_MAX+pk0j_end_) - pk0j_start_;
+	} else {
+	  pk0 = pk0j_end_ - pk0j_start_;
+	}
+	
+	if(pk1j_end_ < pk1j_start_) {
+	  pk1 = (UINT32_MAX+pk1j_end_) - pk1j_start_;
+	} else {
+	  pk1 = pk1j_end_ - pk1j_start_;
+	}
+
+	// msg_size i itr dvfs time pk0j pk1j
+	ebbrt::kprintf_force("netpipe %u %u %u 0x%x %.6f %.6f %.6f %llu %llu %llu %llu %u %u\n", msg_sizes_, iter_, (itr_*2), dvfs_, (tdiff/1000000.0), pk0*rapl_cpu_energy_units, pk1*rapl_cpu_energy_units, cins_, ccyc_, crefcyc_, cllc_, nsleep_states[MCPU], rxPollCnt[MCPU]);
+	
+	//ebbrt::kprintf_force("msg_size=%u tput=%.2lf lat=%.2lf energy=%.2lf rx_bytes=%llu tx_bytes=%llu\n", msg_sizes_, tput, lat, (pk0+pk1)*rapl_cpu_energy_units, sum_rxb, sum_txb);
+	//ebbrt::kprintf_force("msg_size=%u tput=%.2lf Mbps, time=%.2lf secs, lat=%.2lf secs\n", msg_sizes_, tput, tdiff/1000000.0, lat);
+	ebbrt::clock::SleepMilli(500);
+	
 	Send(std::move(b));
 	state_ = SYNC;
 	readyToSocat = 1;
-        ebbrt::kprintf_force("readyToSocat = %d\n", readyToSocat);
+        //ebbrt::kprintf_force("readyToSocat = %d\n", readyToSocat);
 	break;
       }	
       case SYNC: { //start of new experiment
@@ -253,8 +299,8 @@ private:
 	iter_ = dp.Get<size_t>();
 	
 	count_ = 0;
-#ifdef WITHLOGGING	
-	for (uint32_t i = 0; i < static_cast<uint32_t>(ebbrt::Cpu::Count()); i++) {
+	for (uint32_t i = 0; i < 2; i++) {
+	  //for (uint32_t i = 0; i < static_cast<uint32_t>(ebbrt::Cpu::Count()); i++) {
 	  ebbrt::Promise<void> p;
 	  auto f = p.GetFuture();
 	  event_manager->SpawnRemote(
@@ -268,28 +314,27 @@ private:
 		// set DVFS - same p state as Linux with performance governor
 		ebbrt::msr::Write(IA32_PERF_CTL, dvfs_);
 	      }
-
-	      // set ITR
-	      network_manager->Config("rx_usecs", itr_);
 	      
+	      // set ITR
+	      network_manager->Config("rx_usecs", itr_);	      
 	      p.SetValue();
 	    }, i);
 	  f.Block();
 	}
-#endif	
+	
 	Send(std::move(b));
 	Pcb().Output();
 	
 #ifdef WITHLOGGING
 	network_manager->Config("clear_stats", MCPU);
 	network_manager->Config("start_stats", MCPU);
-	struct IxgbeLog *il = (struct IxgbeLog *)&ixgbe_logs;
-	il->msg_size = msg_sizes_;
-	il->repeat = repeat_;
-	il->dvfs = dvfs_;
-	il->rapl = rapl_;
-	il->itr = itr_*2;
-	il->iter = iter_;
+	//struct IxgbeLog *il = (struct IxgbeLog *)&ixgbe_logs;
+	//il->msg_size = msg_sizes_;
+	//il->repeat = repeat_;
+	//il->dvfs = dvfs_;
+	//il->rapl = rapl_;
+	//il->itr = itr_*2;
+	//il->iter = iter_;
 #endif	
 	state_ = RPC;
 	break;
@@ -307,7 +352,7 @@ private:
 #ifdef WITHLOGGING
 	  // we receive a full packet
 	  if(count_ == 0) {
-	    work_start = ebbrt::trace::rdtsc();
+	    //work_start = ebbrt::trace::rdtsc();
 	    for (uint32_t i = 0; i < 2; i++) {
 	      ebbrt::Promise<void> p;
 	      auto f = p.GetFuture();
@@ -323,9 +368,13 @@ private:
 		}, i);
 	      f.Block();
 	    }
+	    cins_ = ebbrt::msr::Read(0x309);
+	    ccyc_ = ebbrt::msr::Read(0x30A);
+	    crefcyc_ = ebbrt::msr::Read(0x30B);
+	    cllc_ = ebbrt::msr::Read(0xC1);	    
 	  }
 	  if(count_ == repeat_-1) {
-	    work_end = ebbrt::trace::rdtsc();
+	    //work_end = ebbrt::trace::rdtsc();
 	    for (uint32_t i = 0; i < 2; i++) {
 	      ebbrt::Promise<void> p;
 	      auto f = p.GetFuture();
@@ -341,6 +390,11 @@ private:
 		}, i);
 	      f.Block();
 	    }
+	    
+	    cins_ = ebbrt::msr::Read(0x309) - cins_;
+	    ccyc_ = ebbrt::msr::Read(0x30A) - ccyc_;
+	    crefcyc_ = ebbrt::msr::Read(0x30B) - crefcyc_;
+	    cllc_ = ebbrt::msr::Read(0xC1) - cllc_;
 	  }
 #endif
 	  count_ += 1;	  
@@ -386,12 +440,17 @@ private:
     size_t rapl_{0};
     size_t itr_{0};
     size_t iter_{0};
-    uint64_t work_start{0};
-    uint64_t work_end{0};
+    //uint64_t work_start{0};
+    //uint64_t work_end{0};
     uint64_t pk0j_start_{0};
     uint64_t pk1j_start_{0};
     uint64_t pk0j_end_{0};
     uint64_t pk1j_end_{0};
+    uint64_t cins_{0};
+    uint64_t ccyc_{0};
+    uint64_t crefcyc_{0};
+    uint64_t cllc_{0};
+    
     float pk0j{0.0};
     float pk1j{0.0};
     float rapl_cpu_energy_units;
@@ -426,6 +485,27 @@ void AppMain() {
       //tpcb.Connect(ebbrt::Ipv4Address({192, 168, 1, 153}), 8888);
       //handler.reset(new TcpSender(std::move(tpcb)));
       //handler->Install();
+      uint32_t index, low, high;
+      uint64_t data;
+    
+      data = 0x333;
+      index = 0x38D;
+      low = (uint32_t)(data & 0xFFFFFFFF);
+      high = (data >> 32) & 0xFFFFFFFF;
+      asm volatile("wrmsr" : : "c"(index), "a"(low), "d"(high));
+      
+      data = 0x43412E;
+      index = 0x186;
+      low = (uint32_t)(data & 0xFFFFFFFF);
+      high = (data >> 32) & 0xFFFFFFFF;
+      asm volatile("wrmsr" : : "c"(index), "a"(low), "d"(high));
+      
+      data = 0x700000001;
+      index = 0x38F;
+      low = (uint32_t)(data & 0xFFFFFFFF);
+      high = (data >> 32) & 0xFFFFFFFF;
+      asm volatile("wrmsr" : : "c"(index), "a"(low), "d"(high));
+      ebbrt::kprintf("TcpCommand server PMC counter initialized\n");
       
       auto id = ebbrt::ebb_allocator->AllocateLocal();
       auto mc = ebbrt::EbbRef<ebbrt::TcpCommand>(id);
@@ -435,7 +515,6 @@ void AppMain() {
       auto id2 = ebbrt::ebb_allocator->AllocateLocal();
       auto tcps = ebbrt::EbbRef<ebbrt::TcpServer>(id2);
       tcps->Start(8889);
-      ebbrt::kprintf("TcpServer listening on port %d\n", 8889);
-        
+      ebbrt::kprintf("TcpServer listening on port %d\n", 8889);        
     }, MCPU);
 }

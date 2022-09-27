@@ -13,6 +13,7 @@
 #include <ebbrt/native/NetTcpHandler.h>
 #include <ebbrt/native/RcuTable.h>
 #include <ebbrt/native/IxgbeDriver.h>
+#include <ebbrt/native/Trace.h>
 
 // Vol. 3C Page 35-3, Table 35-2. IA-32 Architectural MSRs
 #define IA32_APIC_BASE 0x1B
@@ -49,6 +50,10 @@
 
 extern char* data_logs[10];
 extern int readyToSocat;
+
+#define MAXS 262144
+#define MCPU 1
+#define WITHLOGGING
 
 namespace ebbrt {
 class TcpServer : public StaticSharedEbb<TcpServer>, public CacheAligned {
